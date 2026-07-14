@@ -21,6 +21,7 @@
           <h1>Matheran</h1>
           <span>Expense Splitter</span>
         </div>
+        <span class="live-badge" id="liveBadge" hidden><i></i>Live</span>
       </div>
       <button class="btn btn-ghost" id="resetBtn" title="Clear all expenses">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -138,7 +139,7 @@
 
   <footer class="footer">
     <div class="wrap">
-      <span>Split equally among 8 · Data stays on your device</span>
+      <span id="syncStatus">Split equally among 8</span>
     </div>
   </footer>
 
@@ -158,6 +159,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

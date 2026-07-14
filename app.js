@@ -1,15 +1,50 @@
 /* ============================================================
    Matheran · Expense Splitter
-   Vanilla JS. State persisted in localStorage.
+   Real-time shared state via Firebase Realtime Database.
+   Falls back to localStorage automatically if Firebase isn't
+   configured yet (so the app still works during setup).
    ============================================================ */
 
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getDatabase, ref, onValue, set, remove
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+/* ============================================================
+   1) PASTE YOUR FIREBASE CONFIG HERE
+   Get it from: Firebase Console → Project settings → Your apps
+   (the web </> app). Keep the databaseURL line — it's required
+   for Realtime Database.
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyBH07E0eSTOMeOWjN51M_hbzHKXuTOt0vc",
+  authDomain: "matheran-expense.firebaseapp.com",
+  databaseURL: "https://matheran-expense-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "matheran-expense",
+  storageBucket: "matheran-expense.firebasestorage.app",
+  messagingSenderId: "340304445818",
+  appId: "1:340304445818:web:15f70eb1cf859b21c956c3",
+};
+
+const CLOUD = !firebaseConfig.apiKey.includes("PASTE");
+
+/* ---------- Constants ---------- */
 const PEOPLE = ['Het', 'Jakir', 'Rajesh', 'Mitul', 'Khant', 'Urvesh', 'Suman', 'Selva'];
 const N = PEOPLE.length;
 const STORAGE_KEY = 'matheran.expenses.v1';
 
 /* ---------- State ---------- */
-let expenses = load();
+let expenses = [];
 let editingId = null;
+
+/* ---------- Cloud handles ---------- */
+let db = null;
+let expensesRef = null;
+if (CLOUD) {
+  const app = initializeApp(firebaseConfig);
+  db = getDatabase(app);
+  expensesRef = ref(db, 'expenses');
+}
 
 /* ---------- Elements ---------- */
 const $ = (sel) => document.querySelector(sel);
@@ -23,80 +58,124 @@ const formTitle = $('#formTitle');
 const cancelEditBtn = $('#cancelEdit');
 const listEl = $('#expenseList');
 const emptyState = $('#emptyState');
+const liveBadge = $('#liveBadge');
+const syncStatus = $('#syncStatus');
 
-/* ---------- Persistence ---------- */
-function load() {
+/* ============================================================
+   Storage layer — cloud when configured, else localStorage
+   ============================================================ */
+function localLoad() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const data = JSON.parse(raw);
+    const data = raw ? JSON.parse(raw) : [];
     return Array.isArray(data) ? data.filter(valid) : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
-function save() {
+function localSave() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses)); } catch {}
 }
 function valid(e) {
   return e && typeof e.id !== 'undefined' && PEOPLE.includes(e.payer) && Number.isFinite(e.amount);
 }
 
+/* Write helpers — return a promise so callers can await if needed */
+function persist(exp) {
+  if (CLOUD) return set(ref(db, 'expenses/' + exp.id), exp);
+  const i = expenses.findIndex((x) => x.id === exp.id);
+  if (i >= 0) expenses[i] = exp; else expenses.push(exp);
+  localSave(); render();
+  return Promise.resolve();
+}
+function persistDelete(id) {
+  if (CLOUD) return remove(ref(db, 'expenses/' + id));
+  expenses = expenses.filter((x) => x.id !== id);
+  localSave(); render();
+  return Promise.resolve();
+}
+function persistClear() {
+  if (CLOUD) return remove(expensesRef);
+  expenses = [];
+  localSave(); render();
+  return Promise.resolve();
+}
+
+/* ============================================================
+   Boot the data source
+   ============================================================ */
+function startSync() {
+  if (CLOUD) {
+    onValue(expensesRef, (snap) => {
+      const val = snap.val() || {};
+      expenses = Object.values(val).filter(valid);
+      render();
+    }, (err) => {
+      console.error('Firebase read failed:', err);
+      setLive(false, 'Sync error — check database rules');
+    });
+
+    // Connection indicator
+    onValue(ref(db, '.info/connected'), (snap) => {
+      setLive(snap.val() === true);
+    });
+  } else {
+    expenses = localLoad();
+    render();
+    setLive(false, 'Local only · not shared — add Firebase config');
+  }
+}
+
+function setLive(online, msg) {
+  if (!CLOUD) {
+    liveBadge.hidden = true;
+    syncStatus.textContent = msg || 'Split equally among 8 · local only';
+    return;
+  }
+  liveBadge.hidden = false;
+  liveBadge.classList.toggle('offline', !online);
+  liveBadge.lastChild.textContent = online ? 'Live' : 'Offline';
+  syncStatus.textContent = msg || (online
+    ? 'Split equally among 8 · synced live across everyone'
+    : 'Reconnecting…');
+}
+
 /* ---------- Helpers ---------- */
 const money = (n) => {
   const v = Math.round((n + Number.EPSILON) * 100) / 100;
-  const s = v.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-  return '₹' + s;
+  return '₹' + v.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 };
 const initials = (name) => name.slice(0, 2).toUpperCase();
-const uid = () => Date.now().toString(36) + Math.floor(performance.now() * 1000 % 1000).toString(36);
+const uid = () =>
+  Date.now().toString(36) + '-' + Math.floor((performance.now() * 1000) % 1e6).toString(36);
 
 function formatDate(iso) {
   if (!iso) return '';
   const d = new Date(iso + 'T00:00:00');
-  if (isNaN(d)) return '';
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  return isNaN(d) ? '' : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
 
-/* ---------- Populate payer dropdown ---------- */
 function initPeople() {
   payerSel.innerHTML = PEOPLE.map((p) => `<option value="${p}">${p}</option>`).join('');
 }
 
 /* ============================================================
-   Settlement math
-   Net balance = what a person paid - their equal share.
-   Positive => owed money. Negative => owes money.
-   Greedy match of biggest creditor with biggest debtor to
-   minimise number of transfers.
+   Settlement math (integer paise to avoid float drift)
    ============================================================ */
 function computeBalances() {
   const total = expenses.reduce((s, e) => s + e.amount, 0);
   const share = total / N;
-
   const paid = Object.fromEntries(PEOPLE.map((p) => [p, 0]));
   for (const e of expenses) paid[e.payer] += e.amount;
-
-  const net = PEOPLE.map((p) => ({
-    name: p,
-    paid: paid[p],
-    share,
-    balance: paid[p] - share,
-  }));
-
+  const net = PEOPLE.map((p) => ({ name: p, paid: paid[p], share, balance: paid[p] - share }));
   return { total, share, net };
 }
 
 function computeSettlements(net) {
-  // Work in integer paise to avoid float drift.
-  const creditors = [];
-  const debtors = [];
+  const creditors = [], debtors = [];
   net.forEach((p) => {
     const cents = Math.round(p.balance * 100);
     if (cents > 0) creditors.push({ name: p.name, cents });
     else if (cents < 0) debtors.push({ name: p.name, cents: -cents });
   });
-
   creditors.sort((a, b) => b.cents - a.cents);
   debtors.sort((a, b) => b.cents - a.cents);
 
@@ -104,9 +183,7 @@ function computeSettlements(net) {
   let i = 0, j = 0;
   while (i < debtors.length && j < creditors.length) {
     const pay = Math.min(debtors[i].cents, creditors[j].cents);
-    if (pay > 0) {
-      transfers.push({ from: debtors[i].name, to: creditors[j].name, amount: pay / 100 });
-    }
+    if (pay > 0) transfers.push({ from: debtors[i].name, to: creditors[j].name, amount: pay / 100 });
     debtors[i].cents -= pay;
     creditors[j].cents -= pay;
     if (debtors[i].cents === 0) i++;
@@ -120,16 +197,12 @@ function computeSettlements(net) {
    ============================================================ */
 function render() {
   const { total, share, net } = computeBalances();
-
-  // Stats
   $('#statTotal').textContent = money(total);
   $('#statPerPerson').textContent = money(share);
   $('#statCount').textContent = expenses.length;
-
   renderList();
   renderBalances(net);
   renderSettlements(net);
-
   $('#listCount').textContent = expenses.length;
 }
 
@@ -138,16 +211,10 @@ function renderList() {
   emptyState.hidden = has;
   listEl.hidden = !has;
 
-  // newest first
   const sorted = [...expenses].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
   listEl.innerHTML = sorted.map((e) => {
     const dateStr = formatDate(e.date);
-    const meta = [
-      `Paid by <b>${escapeHtml(e.payer)}</b>`,
-      dateStr,
-    ].filter(Boolean).join(' · ');
-
+    const meta = [`Paid by <b>${escapeHtml(e.payer)}</b>`, dateStr].filter(Boolean).join(' · ');
     return `
       <div class="expense-item" data-id="${e.id}">
         <div class="avatar">${initials(e.payer)}</div>
@@ -170,19 +237,14 @@ function renderList() {
 
 function renderBalances(net) {
   const maxAbs = Math.max(1, ...net.map((p) => Math.abs(p.balance)));
-  const box = $('#balances');
-
-  box.innerHTML = net.map((p) => {
+  $('#balances').innerHTML = net.map((p) => {
     const cents = Math.round(p.balance * 100);
     const cls = cents > 0 ? 'pos' : cents < 0 ? 'neg' : 'zero';
     const pct = Math.min(100, (Math.abs(p.balance) / maxAbs) * 100);
     const bar = cents > 0
       ? `<div class="bal-bar pos" style="width:${pct}%"></div>`
-      : cents < 0
-      ? `<div class="bal-bar neg" style="width:${pct}%"></div>`
-      : '';
+      : cents < 0 ? `<div class="bal-bar neg" style="width:${pct}%"></div>` : '';
     const val = cents === 0 ? '₹0' : (cents > 0 ? '+' : '−') + money(Math.abs(p.balance)).slice(1);
-
     return `
       <div class="bal-row">
         <span class="bal-name"><span class="dot ${cls}"></span>${escapeHtml(p.name)}</span>
@@ -207,10 +269,8 @@ function renderSettlements(net) {
     $('#settleCount').textContent = '0';
     return;
   }
-
   settled.hidden = true;
   $('#settleCount').textContent = transfers.length;
-
   box.innerHTML = transfers.map((t) => `
     <div class="settle-row">
       <div class="avatar" style="width:34px;height:34px;font-size:13px">${initials(t.from)}</div>
@@ -224,9 +284,9 @@ function renderSettlements(net) {
 }
 
 function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
+  return String(str).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
 }
 
 /* ============================================================
@@ -234,7 +294,6 @@ function escapeHtml(str) {
    ============================================================ */
 form.addEventListener('submit', (e) => {
   e.preventDefault();
-
   const payer = payerSel.value;
   const amount = parseFloat(amountInput.value);
   const description = descInput.value.trim();
@@ -246,30 +305,22 @@ form.addEventListener('submit', (e) => {
 
   if (editingId) {
     const exp = expenses.find((x) => x.id === editingId);
-    if (exp) {
-      exp.payer = payer;
-      exp.amount = amount;
-      exp.description = description;
-      exp.date = date;
-    }
+    const updated = {
+      id: editingId,
+      payer, amount, description, date,
+      createdAt: exp ? exp.createdAt : Date.now(),
+    };
+    persist(updated);
     toast('Expense updated');
     exitEdit();
   } else {
-    expenses.push({
-      id: uid(),
-      payer,
-      amount,
-      description,
-      date,
-      createdAt: Date.now(),
-    });
+    persist({ id: uid(), payer, amount, description, date, createdAt: Date.now() });
     toast('Expense added');
   }
 
-  save();
-  render();
   form.reset();
-  descInput.focus();
+  // Focus straight back to Amount for fast repeated entry.
+  amountInput.focus();
 });
 
 /* ---------- Edit / delete via delegation ---------- */
@@ -277,9 +328,8 @@ listEl.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const id = btn.dataset.id;
-  const action = btn.dataset.action;
-  if (action === 'edit') startEdit(id);
-  else if (action === 'delete') askDelete(id);
+  if (btn.dataset.action === 'edit') startEdit(id);
+  else if (btn.dataset.action === 'delete') askDelete(id);
 });
 
 function startEdit(id) {
@@ -290,13 +340,11 @@ function startEdit(id) {
   amountInput.value = exp.amount;
   descInput.value = exp.description;
   dateInput.value = exp.date || '';
-
   formTitle.textContent = 'Edit expense';
   submitLabel.textContent = 'Save changes';
   cancelEditBtn.hidden = false;
-
   form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  descInput.focus();
+  amountInput.focus();
 }
 
 function exitEdit() {
@@ -306,38 +354,31 @@ function exitEdit() {
   cancelEditBtn.hidden = true;
   form.reset();
 }
-
 cancelEditBtn.addEventListener('click', exitEdit);
 
 /* ---------- Delete with confirm + animation ---------- */
 function askDelete(id) {
   const exp = expenses.find((x) => x.id === id);
   if (!exp) return;
-  openConfirm(
-    'Delete expense?',
+  openConfirm('Delete expense?',
     `“${exp.description}” · ${money(exp.amount)} paid by ${exp.payer}.`,
-    () => doDelete(id)
-  );
+    () => doDelete(id));
 }
 
 function doDelete(id) {
   const node = listEl.querySelector(`.expense-item[data-id="${id}"]`);
-
   let done = false;
   const commit = () => {
     if (done) return;
     done = true;
-    expenses = expenses.filter((x) => x.id !== id);
     if (editingId === id) exitEdit();
-    save();
-    render();
+    persistDelete(id);
     toast('Expense deleted');
   };
-
   if (node) {
     node.classList.add('removing');
     node.addEventListener('animationend', commit, { once: true });
-    setTimeout(commit, 400); // fallback if animationend doesn't fire
+    setTimeout(commit, 400);
   } else {
     commit();
   }
@@ -348,18 +389,10 @@ function doDelete(id) {
    ============================================================ */
 $('#resetBtn').addEventListener('click', () => {
   if (expenses.length === 0) return toast('Nothing to reset');
-  openConfirm(
-    'Reset everything?',
-    'This deletes all expenses and settlements. It cannot be undone.',
-    () => {
-      expenses = [];
-      exitEdit();
-      save();
-      render();
-      toast('All cleared');
-    },
-    'Reset'
-  );
+  openConfirm('Reset everything?',
+    'This deletes all expenses for everyone. It cannot be undone.',
+    () => { exitEdit(); persistClear(); toast('All cleared'); },
+    'Reset');
 });
 
 /* ============================================================
@@ -367,7 +400,6 @@ $('#resetBtn').addEventListener('click', () => {
    ============================================================ */
 const modal = $('#confirm');
 let confirmCb = null;
-
 function openConfirm(title, msg, cb, okLabel = 'Delete') {
   $('#confirmTitle').textContent = title;
   $('#confirmMsg').textContent = msg;
@@ -376,18 +408,9 @@ function openConfirm(title, msg, cb, okLabel = 'Delete') {
   modal.hidden = false;
 }
 function closeConfirm() { modal.hidden = true; confirmCb = null; }
-
-modal.addEventListener('click', (e) => {
-  if (e.target.hasAttribute('data-close')) closeConfirm();
-});
-$('#confirmOk').addEventListener('click', () => {
-  const cb = confirmCb;
-  closeConfirm();
-  if (cb) cb();
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !modal.hidden) closeConfirm();
-});
+modal.addEventListener('click', (e) => { if (e.target.hasAttribute('data-close')) closeConfirm(); });
+$('#confirmOk').addEventListener('click', () => { const cb = confirmCb; closeConfirm(); if (cb) cb(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) closeConfirm(); });
 
 /* ============================================================
    Toast
@@ -406,3 +429,4 @@ function toast(msg) {
    ============================================================ */
 initPeople();
 render();
+startSync();

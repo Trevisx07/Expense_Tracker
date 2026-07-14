@@ -76,6 +76,35 @@ body {
 .brand-text h1 { font-size: 17px; font-weight: 700; letter-spacing: -.3px; line-height: 1.1; }
 .brand-text span { font-size: 12px; color: var(--ink-3); letter-spacing: .2px; }
 
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: 4px 10px 4px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+  letter-spacing: .3px;
+}
+.live-badge i {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #37d67a;
+  box-shadow: 0 0 0 0 rgba(55,214,122,.6);
+  animation: pulse 2s var(--ease) infinite;
+}
+.live-badge.offline i { background: var(--ink-3); animation: none; box-shadow: none; }
+.live-badge.offline { color: var(--ink-3); }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(55,214,122,.5); }
+  70% { box-shadow: 0 0 0 6px rgba(55,214,122,0); }
+  100% { box-shadow: 0 0 0 0 rgba(55,214,122,0); }
+}
+
 /* ============ Main ============ */
 .main { position: relative; z-index: 1; padding: 26px 20px 60px; }
 
